@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: mensajitos-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PUBLIC_URL
+        value: https://mensajitos-api.onrender.com
+    # Root directory is repo root (default)
+    # No need to specify rootDir - defaults to .
