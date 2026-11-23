@@ -218,3 +218,76 @@
 4. Overlay desarrollado en browser primero, IPC después
 
 **Para la próxima:** Empieza con `POSTMORTEM.md` del proyecto anterior como checklist.
+
+---
+
+## 🌐 Migración a Render + GitHub Pages (Sesión Final)
+
+### Decisiones clave (A2 + B1)
+
+| Decisión | Opción | Resultado |
+|----------|--------|-----------|
+| **A. ¿Dónde vive `/send`?** | A2: GitHub Pages estático | ✅ Carga instantánea, banner "despertar" siempre, desacoplado de API |
+| **B. Pérdida en plan gratis** | B1: Aceptar + avisar | ✅ $0, simple. Mensajes con Mac apagado >15 min se pierden |
+
+### Bugs nuevos resueltos en migración
+
+| Bug | Tiempo | Causa raíz | Prevención |
+|-----|--------|------------|------------|
+| **Render no encuentra `package.json`** | ~2 hrs | Archivos nunca `git add` (src/, electron/, package.json) | **`git ls-files` ANTES de deploy**; verificar commit remoto |
+| **CORS typo: `juandisol` vs `juandisolo`** | ~30 min | Copy-paste sin verificar username GitHub | Verificar `curl -H "Origin: ..."` ANTES de probar UI |
+| **Blueprint Render ignora `rootDir`** | ~1 hr | Bug conocido: Blueprint usa `src/` por defecto | **Web Service manual** (UI) respeta Root Directory; Blueprint no |
+| **Polling sin timeout/backoff** | ~15 min | Cold start Render 60-90s → fetch cuelga / JSON.parse falla en HTML | Timeout 10s + backoff 2→5→15s + validar `ok===true` + ignorar no-JSON |
+
+### Workarounds Render (documentar en CLAUDE.md)
+
+```bash
+# 1. Root Directory en Web Service manual = "." (punto literal, no vacío)
+# 2. NO definir PORT (Render lo inyecta)
+# 3. PUBLIC_URL=https://tu-servicio.onrender.com en Environment
+# 4. GitHub Pages en repo privado requiere plan Pro; usar público o Cloudflare Pages
+# 5. Cache 404 en Fastly ~5 min tras primer deploy fallido; esperar
+```
+
+### Lecciones nuevas para CLAUDE.md global
+
+1. **Verifica commit remoto antes de culpar a la plataforma**
+   - `git ls-tree -r HEAD --name-only | grep package.json` → debe aparecer
+   - 5 configuraciones Render fallaron igual; causa: commit sin package.json
+
+2. **Blueprint ≠ Web Service manual en Render**
+   - Blueprint: ignora `rootDir`, usa detector automático (bug: detecta `src/`)
+   - Manual: respeta campo "Root Directory" en UI → **usar manual**
+
+3. **CORS: prueba con `curl -H "Origin: ..."` ANTES de UI**
+   - Typo `juandisol` vs `juandisolo` pasó desapercibido hasta prueba móvil real
+
+4. **Polling resiliente = obligatorio en serverless/gratis**
+   - Timeout + backoff + validar JSON estricto (`ok===true`) + ignorar HTML
+   - Sin esto: cold start = mensajes perdidos / app muda
+
+5. **GitHub Pages cachea 404 ~5 min (Fastly)**
+   - Primer deploy fallido → cache 404 → fix deploy → esperar 5 min
+   - Probar con `curl -I` o móvil (cache distinta)
+
+### Estructura final recomendada (actualizada)
+
+```
+mensajitos/
+├── CLAUDE.md                 # Instrucciones + workarounds Render/Electron
+├── POSTMORTEM.md             # Este archivo
+├── COMO_USAR.md              # Guía usuario: 3 pasos (sender, app, móvil)
+├── ESTADO.md                 # Checklist vivo (H0-H5 completados)
+├── render.yaml               # Blueprint Render (fallback, no usado)
+├── server.js                 # API Express (CORS, PUBLIC_URL, health+ts)
+├── electron/
+│   ├── main.cjs              # Polling resiliente (timeout, backoff, no-JSON)
+│   └── preload.cjs           # IPC bridge
+├── src/
+│   ├── overlay.html          # Renderer Electron
+│   └── icon.png
+├── docs/
+│   ├── send.html             # GitHub Pages (sender Valentina)
+│   └── send.js               # Banner despertar, check adaptativo
+└── scripts/                  # start/stop/test helpers
+```
