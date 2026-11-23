@@ -6,13 +6,16 @@ const fs = require('node:fs');
 console.error('[Main] Starting...', { __dirname, platform: process.platform });
 console.error('[Main] process.versions:', process.versions);
 
-const POLL_INTERVAL = 2000; // 2 segundos
+const POLL_INTERVAL_BASE = 2000; // 2 segundos base
 const AUTO_HIDE_DELAY = 10000; // 10 segundos
 const WIN_W = 340; // Ventana del ancho exacto de la tarjeta
 const MARGIN = 20;
 
 // ID FIJO compartido con /send
 const FIXED_DEVICE_ID = 'juan-macbook';
+
+// URL por defecto del servidor (un solo lugar, prioridad: config > env > DEFAULT)
+const DEFAULT_SERVER_URL = 'https://mensajitos-api.onrender.com';
 
 // Configuración persistente en userData/config.json
 function getConfig() {
@@ -44,10 +47,10 @@ function getDeviceId() {
   return FIXED_DEVICE_ID;
 }
 
-// Obtener serverUrl desde config.json o env var
+// Obtener serverUrl: config.json > env var > DEFAULT_SERVER_URL
 function getServerUrl() {
   const config = getConfig();
-  return config.serverUrl || process.env.MENSAJITOS_SERVER || 'https://manuals-tobacco-trained-log.trycloudflare.com';
+  return config.serverUrl || process.env.MENSAJITOS_SERVER || DEFAULT_SERVER_URL;
 }
 
 // Guardar serverUrl en config.json
@@ -66,6 +69,12 @@ let notificationQueue = [];
 let isShowingNotification = false;
 let pendingShow = false;
 let showTimeout = null;
+
+// Polling resiliente state
+let currentPollInterval = POLL_INTERVAL_BASE;
+let consecutiveErrors = 0;
+const POLL_TIMEOUT_MS = 10000; // 10s timeout per request
+const BACKOFF_STEPS = [2000, 5000, 15000]; // 2s → 5s → 15s
 
 // Crear ventana overlay
 function createOverlayWindow() {
@@ -156,40 +165,83 @@ function createTray() {
   tray.setContextMenu(contextMenu);
 }
 
-// Iniciar polling al servidor
+// Iniciar polling al servidor (resiliente: timeout, backoff, ignora no-JSON)
 function startPolling() {
   const serverUrl = getServerUrl();
   console.error('[Main] Starting polling...', { deviceId, serverUrl });
   if (pollingInterval) clearInterval(pollingInterval);
 
-  pollingInterval = setInterval(async () => {
-    try {
-      const currentServerUrl = getServerUrl(); // Re-read in case config changed
-      const response = await fetch(`${currentServerUrl}/api/poll/${deviceId}?since=${lastSeq}`);
-      if (!response.ok) return;
+  consecutiveErrors = 0;
+  currentPollInterval = POLL_INTERVAL_BASE;
 
-      const messages = await response.json();
-      if (messages.length === 0) return;
+  function scheduleNextPoll() {
+    pollingInterval = setInterval(async () => {
+      try {
+        const currentServerUrl = getServerUrl();
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), POLL_TIMEOUT_MS);
 
-      // Server restart detection: if we get messages but all have seq <= lastSeq,
-      // the server seq was reset (e.g., server restart). Reset lastSeq to 0 to catch up.
-      const maxSeq = Math.max(...messages.map(m => m.seq));
-      if (maxSeq <= lastSeq) {
-        console.error('[Main] Server seq reset detected (maxSeq:', maxSeq, '<= lastSeq:', lastSeq, '), resetting lastSeq to 0');
-        lastSeq = 0;
-      }
+        const response = await fetch(
+          `${currentServerUrl}/api/poll/${deviceId}?since=${lastSeq}`,
+          { signal: controller.signal }
+        );
+        clearTimeout(timeoutId);
 
-      for (const msg of messages) {
-        if (msg.seq > lastSeq) {
-          lastSeq = msg.seq;
-          queueNotification(msg);
+        // Ignorar respuestas no-OK (incluye HTML de cold start Render)
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
         }
+
+        // Validar JSON estricto: Render cold start devuelve HTML → json() lanza
+        let messages;
+        try {
+          messages = await response.json();
+        } catch (e) {
+          throw new Error('Invalid JSON (probable HTML cold start)');
+        }
+
+        // Validar estructura mínima esperada
+        if (!Array.isArray(messages)) {
+          throw new Error('Response not an array');
+        }
+
+        // ÉXITO: resetear backoff
+        if (consecutiveErrors > 0) {
+          console.error('[Main] Polling recovered after', consecutiveErrors, 'errors');
+        }
+        consecutiveErrors = 0;
+        currentPollInterval = POLL_INTERVAL_BASE;
+
+        if (messages.length === 0) return;
+
+        // Server restart detection: seq reset
+        const maxSeq = Math.max(...messages.map(m => m.seq));
+        if (maxSeq <= lastSeq) {
+          console.error('[Main] Server seq reset detected (maxSeq:', maxSeq, '<= lastSeq:', lastSeq, '), resetting lastSeq to 0');
+          lastSeq = 0;
+        }
+
+        for (const msg of messages) {
+          if (msg.seq > lastSeq) {
+            lastSeq = msg.seq;
+            queueNotification(msg);
+          }
+        }
+      } catch (err) {
+        consecutiveErrors++;
+        const backoffIndex = Math.min(consecutiveErrors - 1, BACKOFF_STEPS.length - 1);
+        currentPollInterval = BACKOFF_STEPS[backoffIndex];
+        console.error('[Main] Poll error #' + consecutiveErrors + ': ' + err.message + ' → backoff ' + currentPollInterval + 'ms');
+
+        // Re-programar con nuevo intervalo
+        if (pollingInterval) clearInterval(pollingInterval);
+        scheduleNextPoll();
       }
-    } catch (err) {
-      console.error('[Main] Poll error:', err);
-    }
-  }, POLL_INTERVAL);
-  console.error('[Main] Polling started, interval:', POLL_INTERVAL);
+    }, currentPollInterval);
+  }
+
+  scheduleNextPoll();
+  console.error('[Main] Polling started, base interval:', POLL_INTERVAL_BASE);
 }
 
 // Queue notifications to show one at a time
