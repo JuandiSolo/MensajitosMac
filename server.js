@@ -13,11 +13,18 @@ const PUBLIC_URL = process.env.PUBLIC_URL || '';
 
 const app = express();
 const httpServer = createServer(app);
+
+// CORS: permitir GitHub Pages (juandisol.github.io) + local dev
+const corsOrigins = [
+  'https://juandisol.github.io',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000'
+];
 const io = new Server(httpServer, {
-  cors: { origin: '*', methods: ['GET', 'POST'] }
+  cors: { origin: corsOrigins, methods: ['GET', 'POST'] }
 });
 
-app.use(cors());
+app.use(cors({ origin: corsOrigins }));
 app.use(express.json());
 app.use(express.static('public'));
 
