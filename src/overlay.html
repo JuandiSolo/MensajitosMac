@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mensajitos</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+      width: 340px;
+      pointer-events: none;
+    }
+    .card {
+      pointer-events: auto;
+      width: 340px;
+      background: rgba(20, 20, 25, 0.92);
+      backdrop-filter: blur(30px);
+      -webkit-backdrop-filter: blur(30px);
+      border-radius: 18px;
+      border: 1px solid rgba(255, 107, 157, 0.25);
+      overflow: hidden;
+      animation: fadeIn 0.25s ease-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    .hiding { animation: fadeOut 0.25s ease-in forwards; }
+    @keyframes fadeOut { to { opacity: 0; } }
+    .header { display: flex; align-items: center; gap: 12px; padding: 16px 16px 12px; }
+    .avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; border: 2px solid rgba(255, 107, 157, 0.6); }
+    .info { flex: 1; min-width: 0; }
+    .name { font-size: 15px; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .time { font-size: 11px; color: rgba(255, 255, 255, 0.45); margin-top: 2px; }
+    .close { width: 28px; height: 28px; border-radius: 50%; background: rgba(255, 255, 255, 0.08); border: none; color: rgba(255, 255, 255, 0.5); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; line-height: 1; flex-shrink: 0; transition: all 0.15s; }
+    .close:hover { background: rgba(255, 60, 60, 0.25); color: #ff4455; transform: scale(1.1); }
+    .content { padding: 0 16px 16px; }
+    .text { font-size: 14px; color: rgba(255, 255, 255, 0.92); line-height: 1.5; margin-bottom: 12px; word-wrap: break-word; }
+    .image { width: 100%; border-radius: 12px; overflow: hidden; background: rgba(0, 0, 0, 0.4); display: none; border: 1px solid rgba(255, 255, 255, 0.05); }
+    .image img, .image video { width: 100%; height: auto; max-height: 200px; display: block; object-fit: contain; }
+    .heartbeat { position: absolute; top: 12px; right: 12px; width: 8px; height: 8px; background: linear-gradient(135deg, #ff4466, #ff6b9d); border-radius: 50%; animation: pulse 1.5s ease-in-out infinite; box-shadow: 0 0 12px rgba(255, 68, 102, 0.6); }
+    @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0.8; } 50% { transform: scale(1.25); opacity: 1; } }
+    /* Glow accent line at top */
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #ff6b9d, #ffcc70, transparent);
+      opacity: 0.7;
+    }
+  </style>
+</head>
+<body>
+  <div class="card" id="card" style="display: none;">
+    <div class="heartbeat"></div>
+    <div class="header">
+      <img class="avatar" id="avatar" src="" alt="">
+      <div class="info">
+        <div class="name" id="name"></div>
+        <div class="time" id="time"></div>
+      </div>
+      <button class="close" id="close" aria-label="Cerrar">✕</button>
+    </div>
+    <div class="content">
+      <div class="text" id="text"></div>
+      <div class="image" id="image"></div>
+    </div>
+  </div>
+  <script>
+    console.log('Overlay HTML loaded (Electron)!');
+    const card = document.getElementById('card');
+    const avatar = document.getElementById('avatar');
+    const name = document.getElementById('name');
+    const time = document.getElementById('time');
+    const text = document.getElementById('text');
+    const imageDiv = document.getElementById('image');
+    const close = document.getElementById('close');
+    let hideTimer = null;
+
+    // ResizeObserver para ajustar la ventana cuando cambia el contenido (texto, imagen, GIF)
+    if (window.electronAPI) {
+      new ResizeObserver(() => {
+        if (card.style.display === 'none') return;
+        const h = Math.ceil(card.getBoundingClientRect().height);
+        window.electronAPI.resizeOverlay && window.electronAPI.resizeOverlay(h);
+      }).observe(card);
+    }
+
+    function show(msg) {
+      console.log('SHOW called with:', msg);
+      clearTimeout(hideTimer);
+      card.classList.remove('hiding');
+      card.style.display = 'block';
+      name.textContent = msg.from || 'Valentina 💕';
+      // Avatar con fallback si falla la carga externa
+      const avatarUrl = msg.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=valentina';
+      avatar.onerror = () => { avatar.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50" fill="%23ff6b9d"/><text x="50" y="62" text-anchor="middle" font-size="50" fill="white">💕</text></svg>'; };
+      avatar.src = avatarUrl;
+      time.textContent = new Date(msg.timestamp * 1000).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+      text.textContent = msg.text || '';
+      text.style.display = msg.text ? 'block' : 'none';
+      if (msg.image_url) {
+        imageDiv.style.display = 'block';
+        const img = document.createElement('img');
+        img.src = msg.image_url;
+        img.alt = '';
+        img.style.cssText = 'width:100%;height:auto;max-height:200px;display:block;object-fit:contain;';
+        img.onerror = () => {
+          console.error('[Overlay] Image failed to load:', msg.image_url);
+          imageDiv.style.display = 'none';
+          imageDiv.innerHTML = '';
+        };
+        imageDiv.innerHTML = '';
+        imageDiv.appendChild(img);
+      } else {
+        imageDiv.style.display = 'none';
+        imageDiv.innerHTML = '';
+      }
+      hideTimer = setTimeout(hide, 10000);
+    }
+    function hide() {
+      card.classList.add('hiding');
+      setTimeout(() => { card.style.display = 'none'; card.classList.remove('hiding'); }, 250);
+      if (window.electronAPI) {
+        window.electronAPI.notifyClosed();
+        window.electronAPI.setIgnoreMouse(true); // Force ignore on hide/close
+      }
+    }
+    close.onclick = (e) => { e.stopPropagation(); hide(); };
+    card.onclick = () => {
+      if (window.electronAPI) {
+        window.electronAPI.notifyClicked();
+      }
+    };
+
+    // Mouse events for click-through: only capture mouse when over the card
+    if (window.electronAPI) {
+      card.addEventListener('mouseenter', () => {
+        window.electronAPI.setIgnoreMouse(false);
+      });
+      card.addEventListener('mouseleave', () => {
+        window.electronAPI.setIgnoreMouse(true);
+      });
+    }
+
+    // Electron IPC listeners
+    if (window.electronAPI) {
+      console.log('Electron API available, listening for new-message');
+      window.electronAPI.onNewMessage((msg) => {
+        console.log('Received new-message via IPC:', msg);
+        show(msg);
+      });
+      window.electronAPI.onHideNotification(() => {
+        console.log('Hide notification signal received');
+        hide();
+      });
+    } else {
+      console.log('Electron API not available (running in browser?)');
+      // Fallback para testing en navegador
+      window.addEventListener('message', (e) => {
+        console.log('Received message:', e);
+        if (e.data.type === 'new-message') show(e.data.payload);
+      });
+    }
+
+    // Test: show after 1 second (solo si no hay Electron)
+    if (!window.electronAPI) {
+      setTimeout(() => {
+        console.log('Auto-test timeout firing (browser mode)');
+        show({
+          from: 'Valentina 💕',
+          avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=valentina',
+          text: '¡Test automático! 😘',
+          timestamp: Date.now() / 1000
+        });
+      }, 1000);
+    }
+  </script>
+</body>
+</html>
