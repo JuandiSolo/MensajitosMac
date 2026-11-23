@@ -1,0 +1,9 @@
+/target
+node_modules
+uploads/
+dist/
+config.json
+.env
+.env.local
+*.log
+.DS_Store
