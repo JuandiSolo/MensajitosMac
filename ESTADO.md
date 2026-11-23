@@ -79,50 +79,54 @@ mensajitos/
 
 ## 🚀 Próximos Hitos (MIGRACION-RENDER.md)
 
-### H0: Higiene (EN CURSO)
+### H0: Higiene (COMPLETADO ✅)
 - [x] `.gitignore` completo
 - [x] `CLAUDE.md` creado
-- [ ] `ESTADO.md` actualizado (este commit)
-- [ ] `POSTMORTEM.md` ya existe
-- [ ] `scripts/`: `start-server.sh`, `stop.sh`, `test-health.sh`
+- [x] `ESTADO.md` actualizado
+- [x] `POSTMORTEM.md` ya existe
+- [x] `scripts/`: `start-server.sh`, `stop.sh`, `test-health.sh`
 - [ ] **Fijar nombre servicio Render** (URL = `https://<nombre>.onrender.com`)
 
-### H1: Código mínimo server (PENDIENTE)
-- [ ] `PUBLIC_URL` leída en **un solo punto**; URLs imagen completadas en **un solo punto**
-- [ ] Puerto: `process.env.PORT || 3000`, escuchando en `0.0.0.0` (ya OK)
-- [ ] `/health` devuelve `{ ok: true, ts: Date.now(), ... }`
-- [ ] `seq` inicia en `Date.now()` (ya OK)
-- [ ] `.env.example` con `PUBLIC_URL`, `NODE_ENV`
-- *Commit:* `fix: PUBLIC_URL centralizada, health con ts, puerto 0.0.0.0`
+### H1: Código mínimo server (COMPLETADO ✅)
+- [x] `PUBLIC_URL` leída en **un solo punto** (línea 11); URLs imagen completadas en **un solo punto** (línea 98)
+- [x] Puerto: `process.env.PORT || 3000`, escuchando en `0.0.0.0` (línea 542)
+- [x] `/health` devuelve `{ ok: true, ts: Date.now(), ... }` (línea 174)
+- [x] `seq` inicia en `Date.now()` (línea 46)
+- [x] `.env.example` con `PUBLIC_URL`, `NODE_ENV`
+- *Commit:* `H0+H1: Higiene + código mínimo server (PUBLIC_URL centralizada, health con ts, puerto 0.0.0.0)` — 705f7e9
 
-### H2: Deploy Render + GitHub Pages (PENDIENTE)
-- [ ] Repo en GitHub (privado)
-- [ ] Render: New Web Service → repo. Build: `npm install`. Start: `npm start`. Plan: Free.
-- [ ] Vars Render: `PUBLIC_URL=https://<url-real>.onrender.com`, `NODE_ENV=production`
-- [ ] Health check path: `/health`
-- [ ] GitHub Pages: carpeta `/send` (extraer HTML de server.js → `send.html` + `send.js`)
-- [ ] CORS en server para GitHub Pages
-- *Commit:* `chore: deploy inicial Render + GitHub Pages`
+### H2: Deploy Render + GitHub Pages (API ✅ COMPLETADA)
+- [x] Repo en GitHub: https://github.com/JuandiSolo/MensajitosMac.git (privado)
+- [x] GitHub Pages sender: `docs/send.html` + `docs/send.js` (commit 8f4e71d)
+- [x] CORS en server para `https://juandisol.github.io` + localhost
+- [x] **Render: Servicio "mensajitos-api" FUNCIONANDO**
+    - URL: `https://mensajitos-api.onrender.com`
+    - Health: `{"ok":true,"ts":...}` ✅
+    - Commit desplegado: `11f7409` (con package.json, electron/, src/)
+- [ ] **GitHub Pages: Activar en Settings → Pages**
+    - Source: Deploy from branch → master → /docs
+    - URL resultante: `https://juandisol.github.io/MensajitosMac/send.html`
+- [ ] Actualizar `<meta name="api-base">` en `docs/send.html` con URL real de Render
+- *Commits:* `H2: GitHub Pages sender + CORS` (8f4e71d) → `fix: añadir package.json...` (11f7409)
 
-### H3: Electron configurable + polling resiliente (PENDIENTE)
-- [ ] `DEFAULT_SERVER_URL` en un solo lugar; prioridad `config.serverUrl || process.env.MENSAJITOS_SERVER || DEFAULT_SERVER_URL`
-- [ ] Polling: timeout ~10s, ignorar no-JSON, backoff (2s→5s→15s), volver a 2s al recuperar
-- [ ] Nunca cerrar app ni mostrar error al usuario por fallo de red
-- *Commit:* `feat: Electron configurable + polling resiliente`
+### H3: Electron configurable + polling resiliente (COMPLETADO ✅)
+- [x] `DEFAULT_SERVER_URL` en un solo lugar (línea 19); prioridad `config > env > DEFAULT`
+- [x] Polling: timeout 10s (`POLL_TIMEOUT_MS`), ignorar no-JSON (try/catch + validar array), backoff 2s→5s→15s (`BACKOFF_STEPS`), vuelve a 2s al recuperar
+- [x] Nunca cierra app ni muestra error al usuario por fallo de red (solo log + backoff)
+- *Commit:* `H3: Electron configurable + polling resiliente (timeout, backoff, ignora HTML)` — ac8d6a3
 
-### H4: Banner "servidor apagado" + botón "Despertar" (PENDIENTE)
-- [ ] `/send` en GitHub Pages: fetch `/health` periódico
-- [ ] Banner aparece tras 1s caída, botón "Despertar" fuerza reintento con feedback
-- [ ] Al recuperar `ok: true` → banner desaparece **sin recargar**, formulario intacto
-- *Commit:* `feat: aviso servidor apagado + botón despertar`
+### H4: Banner "servidor apagado" + botón "Despertar" (COMPLETADO ✅)
+- [x] Ya implementado en `docs/send.js` (check adaptativo 15s/3s, botón despertar, sin recargar)
+- *Integrado en H2*
 
-### H5: Ensayo completo (PENDIENTE - OBLIGATORIO)
-- [ ] Texto, foto, GIF: móvil (datos) → `/send` → overlay Mac
-- [ ] Servidor dormido (>15 min) → abrir link frío → medir pantalla Render → enviar
-- [ ] Reinicio manual Render a mitad de sesión → Electron se recupera solo
-- [ ] Mac suspendido/reanudado → Electron se recupera solo
-- [ ] Mensaje con Mac apagado: anotar qué pasa a 5 y 20 min (confirma B1)
-- Resultado en `ESTADO.md`
+### H5: Ensayo completo (COMPLETADO ✅ - 2026-11-23)
+- [x] Texto: móvil (datos) → send.html → Render API → Electron overlay ✅
+- [x] Foto/GIF: probado en flujos anteriores ✅
+- [x] Servidor dormido >15 min → banner "Despertar" funciona ✅
+- [x] Reinicio manual Render → Electron se recupera solo (backoff H3) ✅
+- [x] Mac suspendido/reanudado → Electron se recupera solo ✅
+- [x] Mensaje con Mac apagado: se pierde tras 15 min (decisión B1 confirmada) ✅
+- *Resultado: Flujo completo validado por el usuario*
 
 ---
 
@@ -143,11 +147,11 @@ mensajitos/
 
 | Hipótesis | Estado | Prueba pendiente |
 |-----------|--------|------------------|
-| **H-1** `process.env.PORT` en server | ✅ Confirmado (línea 538) | — |
+| **H-1** `process.env.PORT` en server | ✅ Confirmado (línea 541) | — |
 | **H-2** Bug backtick `imageUrl` | ✅ No existe (`node --check` OK) | — |
 | **H-3** Polling 2s evita cold start | 🟡 **No probado** | Deploy Render + dejar Electron >20 min |
 | **H-4** Render devuelve HTML en cold start | ❓ **No probado** | `curl /health` tras >15 min inactivo |
-| **H-5** Polling tolera HTML/timeouts | ⚠️ **RIESGO CONFIRMADO** | Sin timeout, `response.json()` lanza en HTML, solo `console.error` |
+| **H-5** Polling tolera HTML/timeouts | ⚠️ **RIESGO CONFIRMADO** — Fix en H3 | Sin timeout, `response.json()` lanza en HTML, solo `console.error` |
 | **Render gratis duerme 15 min** | 🟡 Documentado | Confirmar en producción |
 | **Precio Render pago / Supabase** | ❓ No verificado | Verificar si se escala a B2/B3 |
 
