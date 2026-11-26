@@ -5,25 +5,13 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "node server.js",
-    "start": "node server.js",
     "electron": "electron .",
-    "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000/health && electron .\"",
     "build": "electron-builder"
   },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.18.2",
-    "multer": "^1.4.5-lts.1",
-    "socket.io": "^4.7.2",
-    "uuid": "^9.0.0"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@electron-forge/cli": "^8.0.1",
-    "concurrently": "^8.2.2",
     "electron": "^30.5.1",
-    "electron-builder": "^24.13.3",
-    "wait-on": "^7.2.0"
+    "electron-builder": "^24.13.3"
   },
   "build": {
     "appId": "com.mensajitos.app",
@@ -36,14 +24,7 @@
       "electron/preload.cjs",
       "src/overlay.html",
       "src/icon.png",
-      "server.js",
       "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "uploads",
-        "to": "uploads"
-      }
     ],
     "mac": {
       "target": "dmg",

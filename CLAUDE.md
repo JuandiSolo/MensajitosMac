@@ -1,20 +1,12 @@
 # Mensajitos — Instrucciones para Claude Code
 
 > **Proyecto:** App de mensajería romántica en tiempo real  
-> **Stack:** Express + Socket.io (server) | Vanilla JS + Electron 30 (desktop) | GitHub Pages (sender UI)  
+> **Stack:** **Supabase (Postgres + Storage + Edge Functions)** | Vanilla JS + Electron 30 (desktop) | GitHub Pages (sender UI)  
 > **Carpeta canónica:** `/Users/juandi/ProyectosClaudeCode/MensajesValentina/mensajitos/`
 
 ---
 
 ## 🚀 Cómo correr el proyecto
-
-### Servidor local
-```bash
-cd /Users/juandi/ProyectosClaudeCode/MensajesValentina/mensajitos
-node server.js
-# → http://localhost:3000/send
-# → http://localhost:3000/health
-```
 
 ### Electron (desarrollo)
 ```bash
@@ -30,48 +22,57 @@ env -u ELECTRON_RUN_AS_NODE ./dist/mac-arm64/Mensajitos.app/Contents/MacOS/Mensa
 
 ### Scripts útiles
 ```bash
-# Verificar health
-curl -s http://localhost:3000/health | jq .
+# Verificar health Supabase
+curl -s https://suupgfhcozmytarrjnhd.supabase.co/rest/v1/ | jq .
 
-# Enviar mensaje de prueba
-curl -X POST http://localhost:3000/api/send \
+# Enviar mensaje de prueba directo a Supabase
+curl -X POST https://suupgfhcozmytarrjnhd.supabase.co/rest/v1/messages \
+  -H 'apikey: sb_publishable_JFkuNAkyUv9ZiiNr4qBDug_pmltoU-4' \
+  -H 'Authorization: Bearer sb_publishable_JFkuNAkyUv9ZiiNr4qBDug_pmltoU-4' \
   -H 'Content-Type: application/json' \
-  -d '{"text":"hola desde curl"}'
+  -H 'Prefer: return=minimal' \
+  -d '{"device_id":"juan-macbook","text":"hola desde curl"}'
 ```
 
 ---
 
-## 🏗 Arquitectura Actual
+## 🏗 Arquitectura Actual (Post-Migración Supabase)
 
 ```
-┌──────────────────┐     HTTPS      ┌─────────────────┐
-│  GitHub Pages    │ ─────────────► │   Render API    │
-│  (send.html)     │  POST /api/    │  (server.js)    │
-└──────────────────┘  fetch         └────────┬────────┘
-                                              │
-                                              │ Polling 2s
-                                              ▼
-                                     ┌─────────────────┐
-                                     │  Electron App   │
-                                     │  (overlay.html) │
-                                     └─────────────────┘
+┌──────────────────┐   INSERT (anon) + Storage   ┌─────────────────────────┐
+│  GitHub Pages    │ ────────────────────────────► │        Supabase         │
+│  docs/send.html  │                                │  Postgres: messages     │
+│  (Valentina)     │                                │  Storage: bucket media  │
+└──────────────────┘                                │  Edge Fn: cleanup (cron)│
+                                                     └───────────┬─────────────┘
+                                                                 │ RPC pull_messages / ack_messages
+                                                                 │ (polling con secreto del receptor)
+                                                     ┌───────────▼─────────────┐
+                                                     │  Electron (Mac de Juan) │
+                                                     │  overlay.html           │
+                                                     └─────────────────────────┘
 ```
 
 ### Componentes clave
 
 | Archivo | Responsabilidad |
 |---------|-----------------|
-| `server.js` | Express + Socket.io. REST: `/api/send`, `/api/upload`, `/api/poll/:deviceId`, `/health` |
+| `docs/send.html` + `docs/send.js` | Sender UI (GitHub Pages). Sube imágenes a Storage + INSERT en `messages` via REST |
 | `src/overlay.html` | Renderer Electron. IPC `new-message`, `hide-notification`, `resize-overlay` |
-| `electron/main.cjs` | Main process: overlay window, tray, polling, config, single-instance lock |
+| `electron/main.cjs` | Main process: overlay window, tray, polling Supabase RPC, config, single-instance lock |
 | `electron/preload.cjs` | contextBridge: expone `resizeOverlay`, `onNewMessage`, `notifyClicked`, `notifyClosed`, `setIgnoreMouse` |
+| `supabase/migrations/0001_init.sql` | Tabla `messages`, RLS, schema `private`, RPC `pull_messages`/`ack_messages` |
+| `supabase/functions/cleanup/index.ts` | Edge Function: borra mensajes entregados (>12h) y no entregados (>15d) + archivos Storage |
 
 ### Device ID
-**FIJO:** `juan-macbook` (hardcodeado en `server.js:115` y `main.cjs:15`). Sin pairing, sin localStorage.
+**FIJO:** `juan-macbook` (hardcodeado en `send.js` y `main.cjs`). Sin pairing, sin localStorage.
 
-### Sequence numbers (seq)
-- Server: `globalSeq = Date.now()` → `nextSeq()` monotónico
-- Cliente: `lastSeq` persistido en memoria, reset si `maxSeq <= lastSeq` (server restart)
+### Flujo de mensajes
+1. **Valentina** (móvil, datos) → `send.html` → sube imagen a Storage (UUID) → `INSERT` en `messages` con `image_path` + `image_url`
+2. **Electron** (polling 3s) → `POST /rest/v1/rpc/pull_messages` con `RECEIVER_SECRET` → recibe mensajes `delivered_at IS NULL`
+3. **Dedupe** por `id` (Set en memoria) → `queueNotification` → muestra overlay
+4. **ACK** tras encolar/mostrar → `POST /rest/v1/rpc/ack_messages` → `delivered_at = now()`
+5. **Cleanup** (cron horario) → borra `delivered_at > 12h` o `created_at > 15d` sin entregar → elimina archivos Storage + filas
 
 ---
 
@@ -84,39 +85,46 @@ curl -X POST http://localhost:3000/api/send \
 | Code signing falla en build | `forceCodeSigning:false, hardenedRuntime:false` en `package.json` | Config build |
 | Click-through bloquea toda ventana | `setIgnoreMouseEvents(true, {forward:true})` siempre; enable solo sobre `.card` via IPC | `main.cjs` + `overlay.html` |
 | Ventana no aparece tras load | `show: false` en `BrowserWindow` + `show()` explícito tras `resize-overlay` IPC | `main.cjs` |
-| Dos instancias = caos | `app.requestSingleInstanceLock()` al inicio de `main.cjs` | `main.cjs:312` |
+| Dos instancias = caos | `app.requestSingleInstanceLock()` al inicio de `main.cjs` | `main.cjs` |
 
 ---
 
-## 🌐 Deploy: Decisiones A2 + B1
+## 🔐 Seguridad (Modelo simple, sin login)
 
-| Decisión | Qué significa |
-|----------|---------------|
-| **A2: GitHub Pages** | `/send` es página estática en GitHub Pages. Llama a API en Render via fetch absoluto. CORS habilitado en server. |
-| **B1: Aceptar pérdida** | Plan gratis Render: duerme a 15 min, disco efímero. Mensajes/imágenes con Mac apagado >15 min se pierden. Avisar a Valentina. |
+- **Anon key** (pública, en `docs/send.html`): solo **INSERT** en `messages` + **upload** en bucket `media`. **No puede leer, actualizar ni borrar.**
+- **Receptor (Mac)**: lee y confirma via **RPC `SECURITY DEFINER`** que exigen `RECEIVER_SECRET` (≥32 bytes). El secreto vive **solo** en `config.json` (userData) y en tabla `private.receiver` (hash). **Nunca en el repo.**
+- **`service_role` key**: solo dentro de Edge Function `cleanup` (secreto de Supabase). **Nunca** en repo, Electron ni Pages.
+- Límites en DB y Storage (largo texto ≤1000, tamaño imagen ≤10MB, MIME: jpeg/png/gif/webp).
 
-### URLs de producción (actualizar tras deploy)
-- **API (Render):** `https://<servicio>.onrender.com`
-- **Sender (GitHub Pages):** `https://<usuario>.github.io/<repo>/send.html`
-- **Health:** `https://<servicio>.onrender.com/health`
+---
 
-### Variables de entorno Render
+## 🌐 Deploy: URLs de producción
+
+| Entorno | URL | Estado |
+|---------|-----|--------|
+| **Sender (GitHub Pages)** | `https://juandisol.github.io/MensajitosMac/send.html` | ✅ Activo |
+| **Supabase Project** | `https://suupgfhcozmytarrjnhd.supabase.co` | ✅ Activo (región `sa-east-1`) |
+| **Supabase Dashboard** | `https://supabase.com/dashboard/project/suupgfhcozmytarrjnhd` | ✅ Activo |
+| **Render (rollback)** | `https://mensajitos-api.onrender.com` | ⏳ Mantenido 1 semana |
+
+### Variables de entorno (solo para referencia local)
 ```env
-PUBLIC_URL=https://<servicio>.onrender.com
-NODE_ENV=production
-# PORT NO definir (Render lo inyecta)
+SUPABASE_URL=https://suupgfhcozmytarrjnhd.supabase.co
+SUPABASE_ANON_KEY=sb_publishable_JFkuNAkyUv9ZiiNr4qBDug_pmltoU-4
+RECEIVER_SECRET=8MnVwyYuoX5rCJi03Q9CIxD4sM+7zqeshKLg6IURU/A=
 ```
 
 ---
 
-## 🔧 Reglas de Desarrollo (guía global §7, §13)
+## 🔧 Reglas de Desarrollo
 
 1. **Un cambio a la vez** → commit verificado → siguiente
-2. **No hardcodear URLs** que cambian: `DEFAULT_SERVER_URL` en un solo lugar, prioridad `config.serverUrl || process.env.MENSAJITOS_SERVER || DEFAULT_SERVER_URL`
-3. **Polling resiliente:** timeout ~10s, ignorar no-JSON, backoff (2s→5s→15s), volver a 2s al recuperar
+2. **No hardcodear URLs** que cambian: config en `config.json` (prioridad: config > env > defaults públicos; secretos **nunca** tienen default en código)
+3. **Polling resiliente:** timeout 10s, ignorar no-JSON, backoff (2s→5s→15s), volver a base al recuperar
 4. **Single instance lock** siempre
-5. **Test real = móvil (datos) → `/send` → overlay Mac**. Logs no cuentan.
-6. **No declarar "funciona" sin prueba visual completa** (texto + foto + GIF + servidor dormido + Mac suspendido)
+5. **Test real = móvil (datos) → `send.html` → overlay Mac**. Logs no cuentan.
+6. **No declarar "funciona" sin prueba visual completa** (texto + foto + GIF + Mac suspendido + app reiniciada)
+7. **Secretos:** solo anon key/URL en repo. `service_role` y `RECEIVER_SECRET` jamás. Revisar `git diff` antes de cada commit.
 
 ---
 
@@ -134,18 +142,20 @@ NODE_ENV=production
 2. No cambies nada hasta que usuario responda decisiones abiertas.
 3. Un cambio a la vez → commit verificado → siguiente.
 4. Si ≥3 hipótesis bloqueadas / ≥10 comandos sin avance → **Informe de atasco**.
-5. Prueba real = móvil (datos) → `/send` → overlay Mac. Logs no cuentan.
+5. Prueba real = móvil (datos) → `send.html` → overlay Mac. Logs no cuentan.
 
 ---
 
-## 📋 Próximos Hitos (MIGRACION-RENDER.md)
+## 📋 Historial de Fases (Completado)
 
-- [x] **H0:** Higiene (git, .gitignore, CLAUDE.md, scripts)
-- [ ] **H1:** Código mínimo server (PUBLIC_URL, puerto 0.0.0.0, seq Date.now, health ts)
-- [ ] **H2:** Deploy Render + GitHub Pages (URLs reales)
-- [ ] **H3:** Electron configurable + polling resiliente
-- [ ] **H4:** Banner "servidor apagado" + botón "Despertar" en `/send` (sin recargar)
-- [ ] **H5:** Ensayo completo cronometrado (móvil + Mac)
+- ✅ **F0:** Preparación (Supabase init, link, RECEIVER_SECRET, config.json)
+- ✅ **F1:** Base de datos + Storage (migración, bucket, policies, tests)
+- ✅ **F2:** Sender (`send.html` + `send.js` → Supabase directo)
+- ✅ **F3:** Electron (polling RPC, catch-up, dedupe, ACK, image_url absoluta)
+- ✅ **F4:** Borrado automático (Edge Function cleanup + pg_cron schedule)
+- ✅ **F5:** Ensayo completo cronometrado (todos los casos validados)
+- ✅ **F6:** Retiro Render (package.json limpio, build sin server, legacy/)
+- ✅ **F7:** Documentación (este archivo, ESTADO.md, COMO_USAR.md, POSTMORTEM.md)
 
 ---
 
@@ -153,17 +163,17 @@ NODE_ENV=production
 
 ```bash
 # 1. Ver estado
-cat ESTADO.md | head -50
+cat ESTADO.md | head -80
 
-# 2. Ver hipótesis abiertas
-grep -A2 "Hipótesis no verificadas" ESTADO.md
+# 2. Build + test Electron
+cd /Users/juandi/ProyectosClaudeCode/MensajesValentina/mensajitos
+npm run build
+pkill -f "Mensajitos.app/Contents/MacOS"
+env -u ELECTRON_RUN_AS_NODE ./dist/mac-arm64/Mensajitos.app/Contents/MacOS/Mensajitos
 
-# 3. Levantar server local
-node server.js
+# 3. Test Supabase directo
+curl -s https://suupgfhcozmytarrjnhd.supabase.co/rest/v1/ | jq .
 
-# 4. Test health
-curl -s http://localhost:3000/health | jq .
-
-# 5. Build + test Electron
-npm run build && env -u ELECTRON_RUN_AS_NODE ./dist/mac-arm64/Mensajitos.app/Contents/MacOS/Mensajitos
+# 4. Ver logs cleanup
+# En Supabase Dashboard → Edge Functions → cleanup → Logs
 ```

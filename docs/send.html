@@ -4,8 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Enviar mensaje a Juan 💕</title>
-  <!-- API base URL - configurar en Render -->
-  <meta name="api-base" content="https://mensajitos-api.onrender.com">
+  <!-- Supabase config - la anon key es pública, está bien en Pages -->
+  <meta name="supabase-url" content="https://suupgfhcozmytarrjnhd.supabase.co">
+  <meta name="supabase-anon-key" content="sb_publishable_JFkuNAkyUv9ZiiNr4qBDug_pmltoU-4">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -109,7 +110,7 @@
       overflow: hidden;
       max-height: 200px;
     }
-    .preview img, .preview video {
+    .preview img {
       width: 100%;
       height: auto;
       display: block;
@@ -190,36 +191,12 @@
       margin-bottom: 20px;
       user-select: all;
     }
-    /* Banner servidor apagado */
-    .server-banner {
-      display: none;
-      background: rgba(248, 113, 113, 0.15);
-      border: 1px solid rgba(248, 113, 113, 0.4);
-      border-radius: 12px;
-      padding: 16px;
-      margin-bottom: 20px;
-      text-align: center;
-    }
-    .server-banner.visible { display: block; animation: slideDown 0.3s ease; }
-    @keyframes slideDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
-    .server-banner.waking { background: rgba(251, 191, 36, 0.15); border-color: rgba(251, 191, 36, 0.4); }
-    .server-banner h3 { color: #f87171; margin-bottom: 8px; font-size: 15px; }
-    .server-banner.waking h3 { color: #fbbf24; }
-    .server-banner p { color: rgba(255,255,255,0.8); font-size: 13px; margin-bottom: 12px; }
-    .server-banner .btn { width: auto; min-width: 160px; }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>Mensajes para Juan 💕</h1>
     <p class="subtitle">Escribe algo bonito, envía una foto o un GIF</p>
-
-    <!-- Banner: servidor apagado / despertando -->
-    <div class="server-banner" id="serverBanner">
-      <h3 id="bannerTitle">Servidor apagado</h3>
-      <p id="bannerMsg">El servidor está dormido. Espera un momento…</p>
-      <button class="btn btn-primary" id="wakeBtn" style="display:none;">Despertar servidor</button>
-    </div>
 
     <div class="device-id" id="deviceId">ID fijo: juan-macbook</div>
 
@@ -237,7 +214,7 @@
       </div>
 
       <div class="form-group">
-        <label>Foto o GIF</label>
+        <label>Foto o GIF (máx 10 MB)</label>
         <div class="file-input">
           <div class="file-label" id="fileLabel">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -247,7 +224,7 @@
             </svg>
             <span id="fileLabelText">Toca para seleccionar</span>
           </div>
-          <input type="file" id="fileInput" accept="image/*,video/*" style="display: none;">
+          <input type="file" id="fileInput" accept="image/*" style="display: none;">
         </div>
         <div class="preview" id="preview"></div>
       </div>

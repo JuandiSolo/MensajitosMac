@@ -270,24 +270,140 @@
    - Primer deploy fallido → cache 404 → fix deploy → esperar 5 min
    - Probar con `curl -I` o móvil (cache distinta)
 
-### Estructura final recomendada (actualizada)
+### Estructura final recomendada (actualizada post-Supabase)
 
 ```
 mensajitos/
-├── CLAUDE.md                 # Instrucciones + workarounds Render/Electron
+├── CLAUDE.md                 # Instrucciones + workarounds Electron + Supabase
 ├── POSTMORTEM.md             # Este archivo
 ├── COMO_USAR.md              # Guía usuario: 3 pasos (sender, app, móvil)
-├── ESTADO.md                 # Checklist vivo (H0-H5 completados)
-├── render.yaml               # Blueprint Render (fallback, no usado)
-├── server.js                 # API Express (CORS, PUBLIC_URL, health+ts)
+├── ESTADO.md                 # Checklist vivo (F0-F7 completados)
+├── PLAN_SUPABASE.md          # Plan de migración (referencia)
+├── .env.example              # SUPABASE_URL, SUPABASE_ANON_KEY (sin valores)
+├── package.json              # Solo electron, electron-builder
 ├── electron/
-│   ├── main.cjs              # Polling resiliente (timeout, backoff, no-JSON)
+│   ├── main.cjs              # Polling Supabase RPC (timeout, backoff, dedupe)
 │   └── preload.cjs           # IPC bridge
 ├── src/
 │   ├── overlay.html          # Renderer Electron
 │   └── icon.png
 ├── docs/
 │   ├── send.html             # GitHub Pages (sender Valentina)
-│   └── send.js               # Banner despertar, check adaptativo
-└── scripts/                  # start/stop/test helpers
+│   └── send.js               # Upload Storage + INSERT messages
+├── supabase/
+│   ├── migrations/
+│   │   └── 0001_init.sql     # Tabla messages, RLS, RPC, schema private
+│   ├── functions/
+│   │   └── cleanup/index.ts  # Edge Function: retención 12h/15d + borrado Storage
+│   └── storage_setup.sql     # Bucket media + policies
+├── legacy/                   # Código Render retirado (F6)
+│   ├── server.js
+│   ├── render.yaml
+│   └── scripts/
+└── dist/
+    └── mac-arm64/
+        └── Mensajitos.app    # App funcional
 ```
+
+---
+
+## 🌐 Migración a Supabase (F0–F7) — Nueva Sesión
+
+### Decisiones confirmadas (D1–D6)
+
+| # | Decisión | Resolución |
+|---|----------|------------|
+| **D1** | Retención entregados | **12h después de `delivered_at`** (configurable en Edge Function) |
+| **D2** | Retención no entregados | **15 días** (configurable) |
+| **D3** | Eliminar Render | **Sí**, tras validar F5. Supabase cubre DB + Storage + Edge Functions |
+| **D4** | Video | **Solo imágenes/GIF/WebP** — quitado `video/*` |
+| **D5** | Región Supabase | `sa-east-1` (São Paulo) |
+| **D6** | "Mensajes en repo" | **Almacén persistente (Supabase)**, NO commitear en git |
+
+### Bugs nuevos resueltos en migración Supabase
+
+| Bug | Tiempo | Causa raíz | Prevención |
+|-----|--------|------------|------------|
+| **anon INSERT falla 401** | ~15 min | Falta `GRANT INSERT ON public.messages TO anon` | **Siempre GRANT base** tras crear tabla + RLS |
+| **service_role sin permisos** | ~10 min | `service_role` no tiene permisos por defecto | `GRANT ALL ON public.messages TO service_role` + `storage.objects` |
+| **Bucket media 404 en list** | ~20 min | Storage API `/list` da 404 aunque bucket existe | Aceptar 400/401/403/404 como "denegado" en tests |
+| **Dedupe por seq vs id** | ~30 min | Seq resetea en server restart; id es UUID persistente | **Dedupe por `id` (UUID)** en Electron, no por seq |
+| **ACK antes de mostrar → pérdida** | ~20 min | Crash entre recibir y ACK pierde mensaje | **ACK tras encolar/mostrar** (pull → dedupe → queue → show → ACK) |
+| **Catch-up sin lastSeq** | ~10 min | Estado vive en DB (`delivered_at IS NULL`), no en seq | Primer poll trae todo `WHERE delivered_at IS NULL` |
+| **image_url absoluta vs relativa** | ~5 min | Render devolvía `/uploads/...`; Supabase da URL pública completa | Quitar prefijo `serverUrl`; usar `image_url` directo |
+
+### Workarounds Supabase (documentar en CLAUDE.md)
+
+```bash
+# 1. Anon key pública → solo INSERT + Storage upload
+#    Políticas RLS: for insert to anon WITH CHECK (device_id = '...' AND delivered_at IS NULL)
+
+# 2. Receptor usa RPC SECURITY DEFINER con RECEIVER_SECRET
+#    Secreto: openssl rand -base64 32 → hash en private.receiver
+#    NUNCA en repo, ni en Electron build, ni en Pages
+
+# 3. service_role SOLO en Edge Function cleanup (secret de Supabase)
+#    GRANT ALL ON public.messages TO service_role
+#    GRANT ALL ON storage.objects TO service_role
+
+# 4. Pull + Ack en DOS pasos (no marcar al leer)
+#    pull_messages: devuelve pendientes, NO marca
+#    ack_messages: marca delivered_at tras mostrar (idempotente)
+#    Dedupe por id en cliente (puede recibir 2x si ACK falla)
+
+# 5. Cleanup usa Storage API (no DELETE FROM storage.objects)
+#    supabase.storage.from('media').remove([...paths])
+
+# 6. pg_cron + pg_net para schedule horario
+#    SELECT cron.schedule('cleanup-hourly', '0 * * * *', $$ SELECT net.http_post(...) $$)
+```
+
+### Lecciones nuevas para CLAUDE.md global
+
+1. **Persistencia fuera del server = obligatorio en serverless/gratis**
+   - Render gratis duerme + disco efímero = pérdida garantizada
+   - Supabase (Postgres + Storage) persiste aunque app esté apagada semanas
+   - **Patrón:** Cliente escribe directo a DB/Storage; receptor lee y ackea
+
+2. **RPC `SECURITY DEFINER` + secreto largo = auth simple sin login**
+   - Anon key pública (solo write) + secreto receptor (solo read/ack)
+   - Hash del secreto en tabla privada (no expuesto por PostgREST)
+   - Rotación: nueva migración actualiza hash + nuevo config.json
+
+3. **Dos pasos (pull + ack) > one-step (marcar al leer)**
+   - Crash entre recibir y mostrar = mensaje perdido con one-step
+   - Con ack explícito: confirmas **tras encolar/mostrar**
+   - Dedupe por UUID en cliente maneja reintentos
+
+4. **Catch-up automático = primer poll trae todo `delivered_at IS NULL`**
+   - No necesitas `lastSeq` / `since` parameter
+   - Estado real vive en DB, no en memoria del cliente
+   - Reiniciar app = recupera todo pendiente
+
+5. **Dedupe por UUID (no seq) = robusto ante restarts**
+   - Seq es local al server (resetea); id es global persistente
+   - Set en memoria `seenMessageIds` evita duplicados visuales
+   - Ack idempotente en server (`WHERE delivered_at IS NULL`)
+
+6. **Cleanup horario + retención configurable = uso mínimo plan gratis**
+   - 12h entregados + 15d no entregados = Storage/DB controlado
+   - Parámetro test `?retention_hours=0` para verificar sin esperar
+   - Borra archivos Storage via API (no SQL) → evita huérfanos
+
+---
+
+## 🏁 Conclusión General (Render + Supabase)
+
+**Lo que hizo que AMBAS migraciones terminaran bien:**
+1. Usuario tomó decisiones clave temprano (A2, B1, D1–D6)
+2. Persistencia en hacer build real funcionar (no rendirse en dev mode)
+3. Patrones correctos al final: CommonJS, seq polling → RPC polling, ResizeObserver, single-instance, pull+ack, dedupe por UUID
+
+**Lo que habría ahorrado 60% del tiempo TOTAL:**
+1. `npm run build` + test real cada 30 min desde minuto 1
+2. `ELECTRON_RUN_AS_NODE` documentado en CLAUDE.md global
+3. Preguntar stack (Tauri vs Electron) en mensaje 1, no mensaje 5
+4. Overlay desarrollado en browser primero, IPC después
+5. **Persistencia externa desde día 1** (no confiar en memoria/disco de serverless gratis)
+
+**Para la próxima:** Empieza con `POSTMORTEM.md` del proyecto anterior como checklist.

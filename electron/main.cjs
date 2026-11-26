@@ -6,16 +6,13 @@ const fs = require('node:fs');
 console.error('[Main] Starting...', { __dirname, platform: process.platform });
 console.error('[Main] process.versions:', process.versions);
 
-const POLL_INTERVAL_BASE = 2000; // 2 segundos base
+const POLL_INTERVAL_BASE = 3000; // 3s base (no hay cold start Render)
 const AUTO_HIDE_DELAY = 10000; // 10 segundos
 const WIN_W = 340; // Ventana del ancho exacto de la tarjeta
 const MARGIN = 20;
 
-// ID FIJO compartido con /send
+// ID FIJO compartido con send.html
 const FIXED_DEVICE_ID = 'juan-macbook';
-
-// URL por defecto del servidor (un solo lugar, prioridad: config > env > DEFAULT)
-const DEFAULT_SERVER_URL = 'https://mensajitos-api.onrender.com';
 
 // Configuración persistente en userData/config.json
 function getConfig() {
@@ -42,33 +39,32 @@ function saveConfig(config) {
   }
 }
 
-// Obtener deviceId (fijo, ignora config.json)
+// Obtener deviceId (fijo)
 function getDeviceId() {
   return FIXED_DEVICE_ID;
 }
 
-// Obtener serverUrl: config.json > env var > DEFAULT_SERVER_URL
-function getServerUrl() {
+// Obtener Supabase config: config.json > env vars (sin defaults para secretos)
+function getSupabaseConfig() {
   const config = getConfig();
-  return config.serverUrl || process.env.MENSAJITOS_SERVER || DEFAULT_SERVER_URL;
-}
-
-// Guardar serverUrl en config.json
-function setServerUrl(url) {
-  const config = getConfig();
-  config.serverUrl = url;
-  saveConfig(config);
+  return {
+    supabaseUrl: config.supabaseUrl || process.env.SUPABASE_URL,
+    supabaseAnonKey: config.supabaseAnonKey || process.env.SUPABASE_ANON_KEY,
+    receiverSecret: config.receiverSecret || process.env.RECEIVER_SECRET
+  };
 }
 
 let deviceId = null;
 let overlayWindow = null;
 let tray = null;
 let pollingInterval = null;
-let lastSeq = 0;
 let notificationQueue = [];
 let isShowingNotification = false;
 let pendingShow = false;
 let showTimeout = null;
+
+// Set para deduplicar mensajes por ID (el estado vive en DB, no en seq)
+const seenMessageIds = new Set();
 
 // Polling resiliente state
 let currentPollInterval = POLL_INTERVAL_BASE;
@@ -95,7 +91,7 @@ function createOverlayWindow() {
     resizable: false,
     movable: false,
     hasShadow: true,
-    useContentSize: true, // Ventana se ajusta al contenido
+    useContentSize: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -153,10 +149,17 @@ function createTray() {
     console.error('[Main] Failed to create tray:', e);
   }
 
+  const { supabaseUrl, receiverSecret } = getSupabaseConfig();
+  const missingConfig = !supabaseUrl || !receiverSecret;
+
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Enviar prueba', click: () => sendTestMessage() },
     { type: 'separator' },
     { label: `Device ID: ${deviceId}`, enabled: false },
+    ...(missingConfig ? [
+      { label: '⚠️ Configuración incompleta', enabled: false },
+      { type: 'separator' }
+    ] : []),
     { type: 'separator' },
     { label: 'Salir', click: () => { app.isQuitting = true; app.quit(); } }
   ]);
@@ -165,10 +168,98 @@ function createTray() {
   tray.setContextMenu(contextMenu);
 }
 
-// Iniciar polling al servidor (resiliente: timeout, backoff, ignora no-JSON)
+// Llamar a pull_messages RPC
+async function pullMessages(supabaseUrl, supabaseAnonKey, receiverSecret, deviceId) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), POLL_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(
+      `${supabaseUrl}/rest/v1/rpc/pull_messages`,
+      {
+        method: 'POST',
+        headers: {
+          'apikey': supabaseAnonKey,
+          'Authorization': `Bearer ${supabaseAnonKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          p_secret: receiverSecret,
+          p_device: deviceId,
+          p_limit: 50
+        }),
+        signal: controller.signal
+      }
+    );
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`HTTP ${response.status}: ${errText}`);
+    }
+
+    const messages = await response.json();
+    if (!Array.isArray(messages)) {
+      throw new Error('Response not an array');
+    }
+    return messages;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
+}
+
+// Llamar a ack_messages RPC
+async function ackMessages(supabaseUrl, supabaseAnonKey, receiverSecret, ids) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), POLL_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(
+      `${supabaseUrl}/rest/v1/rpc/ack_messages`,
+      {
+        method: 'POST',
+        headers: {
+          'apikey': supabaseAnonKey,
+          'Authorization': `Bearer ${supabaseAnonKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          p_secret: receiverSecret,
+          p_ids: ids
+        }),
+        signal: controller.signal
+      }
+    );
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`HTTP ${response.status}: ${errText}`);
+    }
+
+    const count = await response.json();
+    return count;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
+}
+
+// Iniciar polling a Supabase (resiliente: timeout, backoff, ignora no-JSON)
 function startPolling() {
-  const serverUrl = getServerUrl();
-  console.error('[Main] Starting polling...', { deviceId, serverUrl });
+  const { supabaseUrl, supabaseAnonKey, receiverSecret } = getSupabaseConfig();
+
+  if (!supabaseUrl || !supabaseAnonKey || !receiverSecret) {
+    console.error('[Main] ❌ Configuración Supabase incompleta (supabaseUrl, supabaseAnonKey, receiverSecret). Polling NO iniciado.');
+    console.error('[Main] Configurar en:', path.join(app.getPath('userData'), 'config.json'));
+    if (tray) {
+      createTray(); // Refresca menú con warning
+    }
+    return;
+  }
+
+  console.error('[Main] Starting Supabase polling...', { deviceId, supabaseUrl });
   if (pollingInterval) clearInterval(pollingInterval);
 
   consecutiveErrors = 0;
@@ -177,33 +268,12 @@ function startPolling() {
   function scheduleNextPoll() {
     pollingInterval = setInterval(async () => {
       try {
-        const currentServerUrl = getServerUrl();
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), POLL_TIMEOUT_MS);
-
-        const response = await fetch(
-          `${currentServerUrl}/api/poll/${deviceId}?since=${lastSeq}`,
-          { signal: controller.signal }
-        );
-        clearTimeout(timeoutId);
-
-        // Ignorar respuestas no-OK (incluye HTML de cold start Render)
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
+        const { supabaseUrl, supabaseAnonKey, receiverSecret } = getSupabaseConfig();
+        if (!supabaseUrl || !supabaseAnonKey || !receiverSecret) {
+          throw new Error('Configuración perdida durante polling');
         }
 
-        // Validar JSON estricto: Render cold start devuelve HTML → json() lanza
-        let messages;
-        try {
-          messages = await response.json();
-        } catch (e) {
-          throw new Error('Invalid JSON (probable HTML cold start)');
-        }
-
-        // Validar estructura mínima esperada
-        if (!Array.isArray(messages)) {
-          throw new Error('Response not an array');
-        }
+        const messages = await pullMessages(supabaseUrl, supabaseAnonKey, receiverSecret, deviceId);
 
         // ÉXITO: resetear backoff
         if (consecutiveErrors > 0) {
@@ -214,18 +284,14 @@ function startPolling() {
 
         if (messages.length === 0) return;
 
-        // Server restart detection: seq reset
-        const maxSeq = Math.max(...messages.map(m => m.seq));
-        if (maxSeq <= lastSeq) {
-          console.error('[Main] Server seq reset detected (maxSeq:', maxSeq, '<= lastSeq:', lastSeq, '), resetting lastSeq to 0');
-          lastSeq = 0;
-        }
-
+        // Deduplicar por ID y encolar
         for (const msg of messages) {
-          if (msg.seq > lastSeq) {
-            lastSeq = msg.seq;
-            queueNotification(msg);
+          if (seenMessageIds.has(msg.id)) {
+            console.error('[Main] Duplicate message skipped:', msg.id);
+            continue;
           }
+          seenMessageIds.add(msg.id);
+          queueNotification(msg);
         }
       } catch (err) {
         consecutiveErrors++;
@@ -246,23 +312,19 @@ function startPolling() {
 
 // Queue notifications to show one at a time
 function queueNotification(message) {
-  // Fix relative image URLs (e.g., /uploads/xxx -> https://server/uploads/xxx)
-  const serverUrl = getServerUrl();
-  if (message.image_url && message.image_url.startsWith('/')) {
-    message.image_url = serverUrl + message.image_url;
-  }
-  console.error('[Main] Queued notification:', { seq: message.seq, text: message.text, image_url: message.image_url });
+  // image_url ya viene absoluta desde Supabase (no necesita prefijo serverUrl)
+  console.error('[Main] Queued notification:', { id: message.id, seq: message.seq, text: message.text, image_url: message.image_url });
 
   notificationQueue.push(message);
   processNotificationQueue();
 }
 
-function processNotificationQueue() {
+async function processNotificationQueue() {
   if (isShowingNotification || notificationQueue.length === 0) return;
 
   const message = notificationQueue.shift();
   isShowingNotification = true;
-  showNotification(message);
+  await showNotification(message);
 }
 
 // Mostrar notificación en el overlay
@@ -270,40 +332,53 @@ function showNotification(message) {
   if (!overlayWindow) {
     isShowingNotification = false;
     processNotificationQueue();
-    return;
+    return Promise.resolve();
   }
 
-  // Keep mouse events ignored by default; overlay.html will toggle via IPC on mouseenter/leave
-  overlayWindow.webContents.send('new-message', message);
+  return new Promise((resolve) => {
+    // Keep mouse events ignored by default; overlay.html will toggle via IPC on mouseenter/leave
+    overlayWindow.webContents.send('new-message', message);
 
-  // Don't show immediately - wait for resize-overlay from renderer
-  // Fallback: show after 300ms if no resize event arrives
-  pendingShow = true;
-  if (showTimeout) clearTimeout(showTimeout);
-  showTimeout = setTimeout(() => {
-    if (pendingShow && overlayWindow && !overlayWindow.isDestroyed()) {
-      console.error('[Main] Fallback show after 300ms');
-      overlayWindow.show();
-      pendingShow = false;
-    }
-  }, 300);
+    // Don't show immediately - wait for resize-overlay from renderer
+    // Fallback: show after 300ms if no resize event arrives
+    pendingShow = true;
+    if (showTimeout) clearTimeout(showTimeout);
+    showTimeout = setTimeout(() => {
+      if (pendingShow && overlayWindow && !overlayWindow.isDestroyed()) {
+        console.error('[Main] Fallback show after 300ms');
+        overlayWindow.show();
+        pendingShow = false;
+      }
+    }, 300);
 
-  setTimeout(() => {
-    if (overlayWindow && !overlayWindow.isDestroyed()) {
-      overlayWindow.webContents.send('hide-notification');
-      setTimeout(() => {
-        if (overlayWindow && !overlayWindow.isDestroyed()) {
-          overlayWindow.setIgnoreMouseEvents(true, { forward: true });
-          overlayWindow.hide();
-        }
+    setTimeout(() => {
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.webContents.send('hide-notification');
+        setTimeout(() => {
+          if (overlayWindow && !overlayWindow.isDestroyed()) {
+            overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+            overlayWindow.hide();
+          }
+          isShowingNotification = false;
+
+          // ACK al servidor DESPUÉS de encolar/mostrar (idempotente)
+          const { supabaseUrl, supabaseAnonKey, receiverSecret } = getSupabaseConfig();
+          if (supabaseUrl && supabaseAnonKey && receiverSecret) {
+            ackMessages(supabaseUrl, supabaseAnonKey, receiverSecret, [message.id])
+              .then(count => console.error('[Main] ACK sent for', message.id, '→', count, 'rows'))
+              .catch(err => console.error('[Main] ACK failed for', message.id, ':', err.message, '→ reintentará en próximo poll'));
+          }
+
+          processNotificationQueue();
+          resolve();
+        }, 300);
+      } else {
         isShowingNotification = false;
         processNotificationQueue();
-      }, 300);
-    } else {
-      isShowingNotification = false;
-      processNotificationQueue();
-    }
-  }, AUTO_HIDE_DELAY);
+        resolve();
+      }
+    }, AUTO_HIDE_DELAY);
+  });
 }
 
 // Resize window to fit card content (sent from renderer via IPC)
@@ -360,7 +435,7 @@ ipcMain.on('set-ignore-mouse', (_, ignore) => {
   }
 });
 
-// Single instance lock - evita múltiples instancias (causa tarjetas superpuestas, mensajes perdidos, estilos viejos)
+// Single instance lock - evita múltiples instancias
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   console.error('[Main] Ya hay otra instancia en ejecución; saliendo.');
@@ -376,6 +451,13 @@ app.on('second-instance', () => {
 app.whenReady().then(() => {
   deviceId = getDeviceId();
   console.error('[Main] App ready, deviceId:', deviceId);
+
+  const { supabaseUrl, supabaseAnonKey, receiverSecret } = getSupabaseConfig();
+  if (!supabaseUrl || !supabaseAnonKey || !receiverSecret) {
+    console.error('[Main] ⚠️ FALTA config.json con supabaseUrl, supabaseAnonKey, receiverSecret');
+    console.error('[Main] Ruta:', path.join(app.getPath('userData'), 'config.json'));
+  }
+
   createOverlayWindow();
   createTray();
   startPolling();

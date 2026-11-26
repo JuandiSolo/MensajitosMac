@@ -1,38 +1,53 @@
-# Mensajitos — Guía Rápida (Producción)
+# Mensajitos — Guía Rápida (Producción con Supabase)
 
 ## URLs de producción (fijas, no cambian)
 
 | Componente | URL |
 |------------|-----|
-| **Sender (Valentina - móvil)** | `https://juandisolo.github.io/MensajitosMac/send.html` |
-| **API (Render - servidor)** | `https://mensajitos-api.onrender.com` |
-| **Health check** | `https://mensajitos-api.onrender.com/health` |
+| **Sender (Valentina - móvil)** | `https://juandisol.github.io/MensajitosMac/send.html` |
+| **Supabase Project** | `https://suupgfhcozmytarrjnhd.supabase.co` |
+| **Supabase Dashboard** | `https://supabase.com/dashboard/project/suupgfhcozmytarrjnhd` |
+
+> **Render ya no se usa** (migración completada F6). El servidor Express + Socket.io fue retirado. Supabase maneja DB, Storage y Edge Functions.
 
 ---
 
-## Para Juan (Mac) — Una sola vez
+## Para Juan (Mac) — Configuración inicial (una sola vez)
 
-### 1. Compilar la app (solo si cambias código Electron)
+### 1. Configurar `config.json`
+La app busca la configuración en:
+```
+~/Library/Application Support/mensajitos/config.json
+```
+
+**Crea/edita ese archivo** con tus credenciales Supabase:
+```json
+{
+  "supabaseUrl": "https://suupgfhcozmytarrjnhd.supabase.co",
+  "supabaseAnonKey": "sb_publishable_JFkuNAkyUv9ZiiNr4qBDug_pmltoU-4",
+  "receiverSecret": "8MnVwyYuoX5rCJi03Q9CIxD4sM+7zqeshKLg6IURU/A="
+}
+```
+
+> **Importante:** El `receiverSecret` es un secreto largo (base64 32 bytes). **Nunca lo commitees al repo**. Solo vive en este archivo y en la tabla privada de Supabase (como hash).
+
+### 2. Compilar la app (solo si cambias código Electron)
 ```bash
 cd /Users/juandi/ProyectosClaudeCode/MensajesValentina/mensajitos
 npm run build
 ```
 
-### 2. Ejecutar la app
+### 3. Ejecutar la app
 ```bash
 # Mata instancias previas y lanza build nuevo
 pkill -f "Mensajitos.app/Contents/MacOS"
 env -u ELECTRON_RUN_AS_NODE ./dist/mac-arm64/Mensajitos.app/Contents/MacOS/Mensajitos
 ```
 
-> **Nota:** La app usa por defecto `https://mensajitos-api.onrender.com`. Si quieres otra URL:
-> ```bash
-> MENSAJITOS_SERVER=https://tu-url.com env -u ELECTRON_RUN_AS_NODE ./dist/mac-arm64/Mensajitos.app/Contents/MacOS/Mensajitos
-> ```
-
-### 3. Verificar que funciona
+### 4. Verificar que funciona
 - En la barra de menú (arriba a la derecha) aparece 💕
 - Click en 💕 → "Enviar prueba" → sale notificación en la Mac
+- Si falta configuración, verás en el menú: **⚠️ Configuración incompleta**
 
 ---
 
@@ -40,36 +55,28 @@ env -u ELECTRON_RUN_AS_NODE ./dist/mac-arm64/Mensajitos.app/Contents/MacOS/Mensa
 
 ### Abre en el navegador (usa **datos móviles**, no wifi de casa)
 ```
-https://juandisolo.github.io/MensajitosMac/send.html
+https://juandisol.github.io/MensajitosMac/send.html
 ```
 
 ### Envía mensajes
-1. Escribe texto o selecciona foto/GIF
-2. "Enviar ahora"
-3. Aparece en la Mac de Juan al instante
+1. Escribe texto o selecciona foto/GIF (máx 10 MB)
+2. Pulsa **"Enviar ahora"**
+3. Verás: **✅ Enviado — le llegará cuando abra la app**
+4. El mensaje llega a la Mac de Juan **en cuanto abra la app** (o al instante si ya está encendida)
+
+> **Ya NO hay banner "Servidor apagado" ni botón "Despertar"** — Supabase no duerme mientras haya actividad.
 
 ---
 
-## Si el servidor está dormido (no hay tráfico >15 min)
-
-Verás un banner: **"Servidor apagado. Espera un momento…"** + botón **"Despertar servidor"**
-
-1. Pulsa **"Despertar servidor"**
-2. Espera ~1 minuto (dice "Despertando… puede tardar ~1 min")
-3. El banner desaparece **solo** cuando el servidor responde
-4. Tu mensaje/foto **no se borra** — reintenta "Enviar ahora"
-
----
-
-## Limitación conocida (Plan gratis Render)
+## Cómo funciona (resumen simple)
 
 | Situación | Qué pasa |
 |-----------|----------|
-| Mac encendido (app corriendo) | Mensajes esperan **indefinidamente** (polling cada 2s mantiene vivo el server) |
-| Mac apagado >15 min sin que nadie abra send.html | Servidor duerme → **mensajes e imágenes se pierden** |
-| Mac apagado, Valentina abre send.html cada <15 min | Servidor se mantiene despierto → mensajes esperan |
-
-> **Solución práctica:** Si vas a enviar algo importante y Juan no está en el Mac, avísale por WhatsApp "enciende el Mac" 😄
+| **Mac encendido (app corriendo)** | Mensajes llegan en **<5 segundos** (polling cada 3s) |
+| **Mac apagado / app cerrada** | Mensajes **se guardan en Supabase** (Postgres + Storage) |
+| **Juan abre la app** | **Catch-up automático**: llegan todos los mensajes pendientes, en orden |
+| **Mensaje entregado** | Se marca `delivered_at` y se **borra a las 12 horas** (incluye imagen) |
+| **Mensaje nunca entregado** | Se **borra a los 15 días** automáticamente |
 
 ---
 
@@ -77,15 +84,18 @@ Verás un banner: **"Servidor apagado. Espera un momento…"** + botón **"Despe
 
 ```bash
 # Ver logs de la app (en terminal donde la ejecutaste)
-# Verás: [Main] Queued notification: { seq: ..., text: '...', image_url: '...' }
+# Verás: [Main] Queued notification: { id: '...', seq: ..., text: '...', image_url: '...' }
 
-# Verificar API health
-curl -s https://mensajitos-api.onrender.com/health | jq .
+# Verificar Supabase health
+curl -s https://suupgfhcozmytarrjnhd.supabase.co/rest/v1/ | jq .
 
-# Enviar mensaje de prueba desde terminal
-curl -X POST https://mensajitos-api.onrender.com/api/send \
+# Enviar mensaje de prueba desde terminal (directo a Supabase)
+curl -X POST https://suupgfhcozmytarrjnhd.supabase.co/rest/v1/messages \
+  -H 'apikey: sb_publishable_JFkuNAkyUv9ZiiNr4qBDug_pmltoU-4' \
+  -H 'Authorization: Bearer sb_publishable_JFkuNAkyUv9ZiiNr4qBDug_pmltoU-4' \
   -H 'Content-Type: application/json' \
-  -d '{"text":"hola desde curl"}'
+  -H 'Prefer: return=minimal' \
+  -d '{"device_id":"juan-macbook","text":"hola desde curl"}'
 
 # Matar todo
 pkill -f "Mensajitos.app/Contents/MacOS"
@@ -96,29 +106,40 @@ npm run build
 
 ---
 
-## Estructura del proyecto
+## Estructura del proyecto (post-migración)
 
 ```
 mensajitos/
-├── server.js                 # Express + Socket.io (API Render)
-├── package.json              # Deps + scripts + build config
-├── electron/
-│   ├── main.cjs              # Proceso principal Electron (polling resiliente)
-│   └── preload.cjs           # IPC bridge
+├── package.json                  # Solo electron, electron-builder
+├── .gitignore                    # Incluye supabase/.temp, supabase/.env
+├── .env.example                  # SUPABASE_URL, SUPABASE_ANON_KEY (sin valores)
+├── CLAUDE.md                     # Instrucciones para Claude Code
+├── ESTADO.md                     # Estado vivo del proyecto
+├── POSTMORTEM.md                 # Lecciones aprendidas
+├── COMO_USAR.md                  # Este archivo
+├── PLAN_SUPABASE.md              # Plan de migración (referencia)
 ├── src/
-│   ├── overlay.html          # Renderer: notificación overlay
-│   └── icon.png              # Tray icon
+│   ├── overlay.html              # Renderer: notificación overlay
+│   └── icon.png                  # Tray icon
+├── electron/
+│   ├── main.cjs                  # Proceso principal: overlay + tray + polling Supabase RPC
+│   └── preload.cjs               # contextBridge → renderer
 ├── docs/
-│   ├── send.html             # GitHub Pages sender (Valentina)
-│   └── send.js               # Lógica sender (banner despertar, etc.)
-├── scripts/
-│   ├── start-server.sh       # Inicia server local
-│   ├── stop.sh               # Mata procesos
-│   └── test-health.sh        # Verifica health
-├── CLAUDE.md                 # Instrucciones para Claude Code
-├── ESTADO.md                 # Estado vivo del proyecto
-├── POSTMORTEM.md             # Lecciones aprendidas
-└── render.yaml               # Config deploy Render (Blueprint)
+│   ├── send.html                 # GitHub Pages sender (Valentina)
+│   └── send.js                   # Lógica envío → Supabase REST + Storage
+├── supabase/
+│   ├── migrations/
+│   │   └── 0001_init.sql         # Tabla messages, RLS, RPC, schema private
+│   ├── functions/
+│   │   └── cleanup/index.ts      # Edge Function: retención 12h/15d + borrado Storage
+│   └── storage_setup.sql         # Bucket media + policies
+├── legacy/                       # Código Render retirado (F6)
+│   ├── server.js
+│   ├── render.yaml
+│   └── scripts/
+└── dist/
+    └── mac-arm64/
+        └── Mensajitos.app        # App funcional
 ```
 
 ---
@@ -126,11 +147,22 @@ mensajitos/
 ## Desarrollo local (opcional)
 
 ```bash
-# Terminal 1: Server local
-./scripts/start-server.sh
-# → http://localhost:3000/send
-# → http://localhost:3000/health
-
-# Terminal 2: Electron dev (requiere server corriendo)
-npm run electron:dev
+# Solo Electron (usa Supabase remoto directo)
+npm run build
+pkill -f "Mensajitos.app/Contents/MacOS"
+env -u ELECTRON_RUN_AS_NODE ./dist/mac-arm64/Mensajitos.app/Contents/MacOS/Mensajitos
 ```
+
+> No hay server local que levantar — todo va contra Supabase en la nube.
+
+---
+
+## Solución de problemas
+
+| Problema | Qué revisar |
+|----------|-------------|
+| **"Configuración incompleta" en tray** | Verifica `~/Library/Application Support/mensajitos/config.json` tiene las 3 claves |
+| **Mensajes no llegan** | 1. ¿App corriendo? 2. ¿`config.json` correcto? 3. ¿Supabase project activo? (Dashboard → Database) |
+| **Imágenes no se ven** | Verifica bucket `media` existe en Supabase Dashboard → Storage |
+| **App no compila** | `rm -rf node_modules package-lock.json && npm install && npm run build` |
+| **Doble notificación** | Solo una instancia permitida — `pkill -f "Mensajitos.app"` antes de lanzar |
