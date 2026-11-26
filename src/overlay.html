@@ -95,9 +95,9 @@
       card.classList.remove('hiding');
       card.style.display = 'block';
       name.textContent = msg.from || 'Valentina 💕';
-      // Avatar con fallback si falla la carga externa
-      const avatarUrl = msg.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=valentina';
-      avatar.onerror = () => { avatar.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50" fill="%23ff6b9d"/><text x="50" y="62" text-anchor="middle" font-size="50" fill="white">💕</text></svg>'; };
+      // Avatar: estilo "personas" mujer sonriendo (seed fijo para consistencia)
+      const avatarUrl = msg.avatar || 'https://api.dicebear.com/7.x/personas/svg?seed=valentina&hairColor=brown,black&skinColor=light';
+      avatar.onerror = () => { avatar.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50" fill="%23ff6b9d"/><text x="50" y="62" text-anchor="middle" font-size="50" fill="white">😊</text></svg>'; };
       avatar.src = avatarUrl;
       // RPC returns created_at (ISO string), fallback to timestamp (unix seconds) for compat
       const ts = msg.created_at ? new Date(msg.created_at) : new Date((msg.timestamp || Date.now()/1000) * 1000);
@@ -174,7 +174,7 @@
         console.log('Auto-test timeout firing (browser mode)');
         show({
           from: 'Valentina 💕',
-          avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=valentina',
+          avatar: 'https://api.dicebear.com/7.x/personas/svg?seed=valentina&hairColor=brown,black&skinColor=light',
           text: '¡Test automático! 😘',
           timestamp: Date.now() / 1000
         });
